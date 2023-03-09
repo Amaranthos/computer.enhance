@@ -1,4 +1,5 @@
 {
-  "name": "computer-enhance",
-  "targetPath": "bin"
+    "name": "computer-enhance",
+    "targetPath": "bin",
+    "targetName": "disassemble"
 }

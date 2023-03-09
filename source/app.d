@@ -1,10 +1,12 @@
 import std.stdio;
-import std.range;
+import std.file;
 
 int main(string[] args)
 {
+	auto file = args[1];
+	assert(file.exists, "File: " ~ file ~ " doesn't exist");
 
-	auto buffer = readFile("bin/37");
+	auto buffer = readFile(file);
 	Instr instr = interpret(buffer);
 	disassemble(instr, stdout);
 
@@ -96,9 +98,9 @@ Instr interpret(ref ubyte[] stream)
 	Scanner scanner = Scanner(stream, stream.ptr);
 	Instr instructions;
 
-	ubyte b1 = scanner.pop();
 	while (!scanner.empty)
 	{
+		ubyte b1 = scanner.pop();
 		switch (b1 >> 2)
 		{
 		case 0b100010:
@@ -155,18 +157,18 @@ uint disassemble(Instr instr, uint offset)
 	{
 	case MOV:
 		assert(instr.registers.length >= 2);
-		Reg dest = instr.registers.pop();
-		Reg src = instr.registers.pop();
+		Reg dest = instr.registers[offset * 2];
+		Reg src = instr.registers[offset * 2 + 1];
 
 		writefln!"mov %s, %s"(registers[dest.addr][dest.wide], registers[src.addr][src.wide]);
 		return offset + 1;
 	}
 }
 
+import std.range : front, popFront, isInputRange;
+
 auto pop(T)(scope ref T a) if (isInputRange!T)
 {
-	import std.range : front, popFront;
-
 	auto f = a.front;
 	a.popFront();
 	return f;
