@@ -1,18 +1,11 @@
 import std.stdio;
-
-// config/command line variables
-string input;
+import std.range;
 
 int main(string[] args)
 {
 
 	auto buffer = readFile("bin/37");
-	interpret(buffer);
-
-	Instr instr;
-
-	instr.write(Op.MOV);
-
+	Instr instr = interpret(buffer);
 	disassemble(instr, stdout);
 
 	return 0;
@@ -23,13 +16,41 @@ enum Op : ubyte
 	MOV,
 }
 
+static string[2][ubyte] registers;
+
+shared static this()
+{
+	registers = [
+		0b000: ["al", "ax"],
+		0b001: ["cl", "cx"],
+		0b010: ["dl", "dx"],
+		0b011: ["bl", "bx"],
+		0b100: ["ah", "sp"],
+		0b101: ["ch", "bp"],
+		0b110: ["dh", "si"],
+		0b111: ["bh", "di"],
+	];
+}
+
+struct Reg
+{
+	ubyte addr;
+	bool wide;
+}
+
 struct Instr
 {
 	ubyte[] code;
+	Reg[] registers;
 
 	void write(Op op)
 	{
 		code ~= op;
+	}
+
+	void writeReg(Reg register)
+	{
+		registers ~= register;
 	}
 }
 
@@ -70,34 +91,52 @@ enum MOV_MOD_MASK = 0xC0; // 11000000
 enum MOV_REG_MASK = 0x38; // 00111000
 enum MOV_RM_MASK = 0x07; // 00000111
 
-void interpret(ref ubyte[] stream)
+Instr interpret(ref ubyte[] stream)
 {
 	Scanner scanner = Scanner(stream, stream.ptr);
+	Instr instructions;
 
-	foreach (ubyte b1; scanner)
+	ubyte b1 = scanner.pop();
+	while (!scanner.empty)
 	{
-		ubyte op = b1 >> 2;
-
-		switch (op)
+		switch (b1 >> 2)
 		{
 		case 0b100010:
 			ubyte d = (b1 & MOV_D_MASK) >> 1;
 			ubyte w = (b1 & MOV_W_MASK);
 
-			scanner.popFront();
-			ubyte b2 = scanner.front();
+			ubyte b2 = scanner.pop();
 
 			ubyte mod = (b2 & MOV_MOD_MASK) >> 6;
+			assert(mod & 0b11, "Mod is not register-register");
+
 			ubyte reg = (b2 & MOV_REG_MASK) >> 3;
 			ubyte rm = (b2 & MOV_RM_MASK);
 
-			assert(mod & 0b11, "Mod is not register-register");
+			ubyte src, dest;
+			if (d)
+			{
+				dest = reg;
+				src = rm;
+			}
+			else
+			{
+				dest = rm;
+				src = reg;
+			}
+
+			instructions.write(Op.MOV);
+			instructions.writeReg(Reg(dest, !!w));
+			instructions.writeReg(Reg(src, !!w));
 			break;
+
 		default:
-			writefln!"unhandled: %b"(op);
+			writefln!"unhandled: %b"(b1);
 			break;
 		}
 	}
+
+	return instructions;
 }
 
 void disassemble(Instr instr, ref File file)
@@ -115,7 +154,20 @@ uint disassemble(Instr instr, uint offset)
 	final switch (op) with (Op)
 	{
 	case MOV:
-		writefln!"mov %s,%s"("ax", "bx");
+		assert(instr.registers.length >= 2);
+		Reg dest = instr.registers.pop();
+		Reg src = instr.registers.pop();
+
+		writefln!"mov %s, %s"(registers[dest.addr][dest.wide], registers[src.addr][src.wide]);
 		return offset + 1;
 	}
+}
+
+auto pop(T)(scope ref T a) if (isInputRange!T)
+{
+	import std.range : front, popFront;
+
+	auto f = a.front;
+	a.popFront();
+	return f;
 }
