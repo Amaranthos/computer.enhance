@@ -18,11 +18,11 @@ enum Op : ubyte
 	MOV,
 }
 
-static string[2][ubyte] registers;
+static string[2][ubyte] regNames;
 
 shared static this()
 {
-	registers = [
+	regNames = [
 		0b000: ["al", "ax"],
 		0b001: ["cl", "cx"],
 		0b010: ["dl", "dx"],
@@ -101,9 +101,9 @@ Instr interpret(ref ubyte[] stream)
 	while (!scanner.empty)
 	{
 		ubyte b1 = scanner.pop();
-		switch (b1 >> 2)
+
+		if (b1 >> 2 & 0b100010)
 		{
-		case 0b100010:
 			ubyte d = (b1 & MOV_D_MASK) >> 1;
 			ubyte w = (b1 & MOV_W_MASK);
 
@@ -130,12 +130,9 @@ Instr interpret(ref ubyte[] stream)
 			instructions.write(Op.MOV);
 			instructions.writeReg(Reg(dest, !!w));
 			instructions.writeReg(Reg(src, !!w));
-			break;
-
-		default:
-			writefln!"unhandled: %b"(b1);
-			break;
 		}
+		else
+			writefln!"unhandled: %b"(b1);
 	}
 
 	return instructions;
@@ -160,7 +157,7 @@ uint disassemble(Instr instr, uint offset)
 		Reg dest = instr.registers[offset * 2];
 		Reg src = instr.registers[offset * 2 + 1];
 
-		writefln!"mov %s, %s"(registers[dest.addr][dest.wide], registers[src.addr][src.wide]);
+		writefln!"mov %s, %s"(regNames[dest.addr][dest.wide], regNames[src.addr][src.wide]);
 		return offset + 1;
 	}
 }
