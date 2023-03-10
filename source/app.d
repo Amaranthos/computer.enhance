@@ -102,8 +102,9 @@ Instr interpret(ref ubyte[] stream)
 	{
 		ubyte b1 = scanner.pop();
 
-		if (b1 >> 2 & 0b100010)
+		switch (b1)
 		{
+		case 0b10001000: .. case 0b10001011: // NOTE: Register to register
 			ubyte d = (b1 & MOV_D_MASK) >> 1;
 			ubyte w = (b1 & MOV_W_MASK);
 
@@ -130,9 +131,12 @@ Instr interpret(ref ubyte[] stream)
 			instructions.write(Op.MOV);
 			instructions.writeReg(Reg(dest, !!w));
 			instructions.writeReg(Reg(src, !!w));
-		}
-		else
+			break;
+
+		default:
 			writefln!"unhandled: %b"(b1);
+			break;
+		}
 	}
 
 	return instructions;
