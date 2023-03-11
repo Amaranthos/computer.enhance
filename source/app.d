@@ -1,5 +1,6 @@
 import std.stdio;
 import std.file;
+import std.container;
 
 int main(string[] args)
 {
@@ -15,10 +16,14 @@ int main(string[] args)
 
 enum Op : ubyte
 {
-	MOV,
+	MOV_RR,
+	MOV_RM,
+	MOV_MR,
+	MOV_IR,
 }
 
 static string[2][ubyte] regNames;
+static string[ubyte] addrCalcs;
 
 shared static this()
 {
@@ -32,6 +37,17 @@ shared static this()
 		0b110: ["dh", "si"],
 		0b111: ["bh", "di"],
 	];
+
+	addrCalcs = [
+		0b000: "bx + si",
+		0b001: "bx + di",
+		0b010: "bp + si",
+		0b011: "bp + di",
+		0b100: "si",
+		0b101: "di",
+		0b110: "bp",
+		0b111: "bx",
+	];
 }
 
 struct Reg
@@ -40,10 +56,24 @@ struct Reg
 	bool wide;
 }
 
+struct Mem
+{
+	ubyte addr;
+	ushort offset;
+}
+
+struct Constant
+{
+	ubyte addr;
+	ushort val;
+}
+
 struct Instr
 {
 	ubyte[] code;
-	Reg[] registers;
+	DList!Reg registers;
+	DList!Mem memory;
+	DList!ushort constants;
 
 	void write(Op op)
 	{
@@ -53,6 +83,16 @@ struct Instr
 	void writeReg(Reg register)
 	{
 		registers ~= register;
+	}
+
+	void writeMem(Mem mem)
+	{
+		memory ~= mem;
+	}
+
+	void writeConstant(ushort val)
+	{
+		constants ~= val;
 	}
 }
 
@@ -111,26 +151,74 @@ Instr interpret(ref ubyte[] stream)
 			ubyte b2 = scanner.pop();
 
 			ubyte mod = (b2 & MOV_MOD_MASK) >> 6;
-			assert(mod & 0b11, "Mod is not register-register");
-
 			ubyte reg = (b2 & MOV_REG_MASK) >> 3;
 			ubyte rm = (b2 & MOV_RM_MASK);
 
-			ubyte src, dest;
-			if (d)
+			final switch (mod)
 			{
-				dest = reg;
-				src = rm;
-			}
-			else
-			{
-				dest = rm;
-				src = reg;
-			}
+			case 0b00:
+				ubyte src, dest;
 
-			instructions.write(Op.MOV);
-			instructions.writeReg(Reg(dest, !!w));
-			instructions.writeReg(Reg(src, !!w));
+				instructions.write(d ? Op.MOV_RM : Op.MOV_MR);
+				instructions.writeReg(Reg(reg, !!w));
+				instructions.writeMem(Mem(rm, 0));
+				break;
+
+			case 0b01:
+				ubyte b3 = scanner.pop();
+
+				instructions.write(d ? Op.MOV_RM : Op.MOV_MR);
+				instructions.writeReg(Reg(reg, !!w));
+				instructions.writeMem(Mem(rm, b3));
+				break;
+
+			case 0b10:
+				ubyte b3 = scanner.pop();
+				ubyte b4 = scanner.pop();
+
+				instructions.write(d ? Op.MOV_RM : Op.MOV_MR);
+				instructions.writeReg(Reg(reg, !!w));
+				instructions.writeMem(Mem(rm, b4 << 8 | b3));
+				break;
+
+			case 0b11:
+				ubyte src, dest;
+				if (d)
+				{
+					dest = reg;
+					src = rm;
+				}
+				else
+				{
+					dest = rm;
+					src = reg;
+				}
+
+				instructions.write(Op.MOV_RR);
+				instructions.writeReg(Reg(dest, !!w));
+				instructions.writeReg(Reg(src, !!w));
+				break;
+			}
+			break;
+
+		case 0b10110000: .. case 0b10111111:
+			ubyte w = b1 & 0b00001000;
+			ubyte reg = b1 & 0b00000111;
+
+			ubyte b2 = scanner.pop();
+			ubyte b3 = w ? scanner.pop() : 0;
+
+			instructions.write(Op.MOV_IR);
+			instructions.writeReg(Reg(reg, !!w));
+			instructions.writeConstant(b3 << 8 | b2);
+
+			break;
+
+		case 0b11000110: .. case 0b11000111:
+			ubyte w = (b1 & MOV_W_MASK);
+			ubyte b2 = scanner.pop();
+			ubyte mod = (b2 & MOV_MOD_MASK) >> 6;
+
 			break;
 
 		default:
@@ -153,15 +241,46 @@ void disassemble(Instr instr, ref File file)
 
 uint disassemble(Instr instr, uint offset)
 {
-	ubyte op = instr.code[offset];
+
+	Op op = cast(Op) instr.code[offset];
 	final switch (op) with (Op)
 	{
-	case MOV:
-		assert(instr.registers.length >= 2);
-		Reg dest = instr.registers[offset * 2];
-		Reg src = instr.registers[offset * 2 + 1];
+	case MOV_RR:
+		assert(!instr.registers.empty);
+		Reg dest = instr.registers.popQ();
+		Reg src = instr.registers.popQ();
 
 		writefln!"mov %s, %s"(regNames[dest.addr][dest.wide], regNames[src.addr][src.wide]);
+		return offset + 1;
+
+	case MOV_MR:
+		assert(!instr.registers.empty());
+		assert(!instr.memory.empty());
+
+		Mem dest = instr.memory.popQ();
+		Reg src = instr.registers.popQ();
+
+		writefln!"mov [%s + %s], %s"(addrCalcs[dest.addr], dest.offset, regNames[src.addr][src.wide]);
+		return offset + 1;
+
+	case MOV_RM:
+		assert(!instr.registers.empty());
+		assert(!instr.memory.empty());
+
+		Reg dest = instr.registers.popQ();
+		Mem src = instr.memory.popQ();
+
+		writefln!"mov %s, [%s + %s]"(regNames[dest.addr][dest.wide], addrCalcs[src.addr], src
+				.offset);
+		return offset + 1;
+
+	case MOV_IR:
+		assert(!instr.registers.empty());
+
+		Reg dest = instr.registers.popQ();
+		short val = cast(short) instr.constants.popQ();
+
+		writefln!"mov %s, %s"(regNames[dest.addr][dest.wide], val);
 		return offset + 1;
 	}
 }
@@ -172,5 +291,12 @@ auto pop(T)(scope ref T a) if (isInputRange!T)
 {
 	auto f = a.front;
 	a.popFront();
+	return f;
+}
+
+auto popQ(T)(scope ref DList!T a)
+{
+	auto f = a.front;
+	a.removeFront();
 	return f;
 }
