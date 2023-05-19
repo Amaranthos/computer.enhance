@@ -1,37 +1,24 @@
 import std.stdio;
 import std.file;
+import std.conv : octal, to, parse;
+
+import diss;
+import instr;
+import scan;
 
 int main(string[] args)
 {
 	auto file = args[1];
 	assert(file.exists, "File: " ~ file ~ " doesn't exist");
 
-	auto buffer = readFile(file);
-	Instr instr = interpret(buffer);
-	disassemble(instr, stdout);
+	auto buffer = readBytes(file);
+
+	Decode decoder;
+	decoder
+		.decode(buffer)
+		.disassemble(stdout);
 
 	return 0;
-}
-
-enum Op : ubyte
-{
-	MOV,
-}
-
-static string[2][ubyte] regNames;
-
-shared static this()
-{
-	regNames = [
-		0b000: ["al", "ax"],
-		0b001: ["cl", "cx"],
-		0b010: ["dl", "dx"],
-		0b011: ["bl", "bx"],
-		0b100: ["ah", "sp"],
-		0b101: ["ch", "bp"],
-		0b110: ["dh", "si"],
-		0b111: ["bh", "di"],
-	];
 }
 
 struct Reg
@@ -40,50 +27,18 @@ struct Reg
 	bool wide;
 }
 
-struct Instr
+struct Stream
 {
-	ubyte[] code;
-	Reg[] registers;
-
-	void write(Op op)
-	{
-		code ~= op;
-	}
-
-	void writeReg(Reg register)
-	{
-		registers ~= register;
-	}
+	Instr[] instructions;
 }
 
-ubyte[] readFile(string path)
+ubyte[] readBytes(string path)
 {
 	File file = File(path, "r");
 	scope (exit)
 		file.close();
 
 	return file.rawRead(new ubyte[file.size()]);
-}
-
-struct Scanner
-{
-	ubyte[] buffer;
-	ubyte* current;
-
-	bool empty()
-	{
-		return current >= buffer.ptr + buffer.length;
-	}
-
-	void popFront()
-	{
-		++current;
-	}
-
-	ubyte front()
-	{
-		return *current;
-	}
 }
 
 enum MOV_MASK = 0x88; // 10001000
@@ -93,84 +48,110 @@ enum MOV_MOD_MASK = 0xC0; // 11000000
 enum MOV_REG_MASK = 0x38; // 00111000
 enum MOV_RM_MASK = 0x07; // 00000111
 
-Instr interpret(ref ubyte[] stream)
+struct Decode
 {
-	Scanner scanner = Scanner(stream, stream.ptr);
-	Instr instructions;
+	Scanner scanner;
+	Stream program;
 
-	while (!scanner.empty)
+	Stream decode(ubyte[] stream)
 	{
-		ubyte b1 = scanner.pop();
+		scanner = Scanner(stream, stream.ptr);
 
-		switch (b1)
+		bool errored;
+		while (!errored && !scanner.empty)
 		{
-		case 0b10001000: .. case 0b10001011: // NOTE: Register to register
-			ubyte d = (b1 & MOV_D_MASK) >> 1;
-			ubyte w = (b1 & MOV_W_MASK);
+			ubyte b1 = scanner.pop();
 
-			ubyte b2 = scanner.pop();
-
-			ubyte mod = (b2 & MOV_MOD_MASK) >> 6;
-			assert(mod & 0b11, "Mod is not register-register");
-
-			ubyte reg = (b2 & MOV_REG_MASK) >> 3;
-			ubyte rm = (b2 & MOV_RM_MASK);
-
-			ubyte src, dest;
-			if (d)
+			switch (b1)
 			{
-				dest = reg;
-				src = rm;
-			}
-			else
-			{
-				dest = rm;
-				src = reg;
-			}
+			case (octal!270): .. case (octal!277):
+				immToReg(b1);
+				break;
 
-			instructions.write(Op.MOV);
-			instructions.writeReg(Reg(dest, !!w));
-			instructions.writeReg(Reg(src, !!w));
-			break;
+			case (octal!210): .. case (octal!213):
+				// case (octal!214):
+				// case (octal!216):
+				mov(b1);
+				break;
 
-		default:
-			writefln!"unhandled: %b"(b1);
+			default:
+				writefln!"unhandled: %o"(b1);
+				errored = true;
+				break;
+			}
+		}
+
+		return program;
+	}
+
+	void mov(ubyte mov)
+	{
+		// mov dest, src
+
+		bool regIsDest;
+		bool wideReg;
+		bool wideDisp;
+		bool hasDisp;
+
+		ubyte xrm = scanner.pop();
+
+		ubyte x = (octal!700 & xrm) >> 6;
+		ubyte r = (octal!70 & xrm) >> 3;
+		ubyte m = (octal!7 & xrm);
+
+		final switch (mov)
+		{
+		case (octal!210): // mov Eb, Rb
 			break;
+		case (octal!211): // mov Ew, Rw
+			wideReg = true;
+			break;
+		case (octal!212): // mov Rb, Eb
+			regIsDest = true;
+			break;
+		case (octal!213): // mov Rw, Ew
+			wideReg = true;
+			regIsDest = true;
+			break;
+			// case (octal!214): // mov Ew, SR
+			// case (octal!216): // mov SR, Ew
+			// 	break;
+		}
+
+		final switch (x)
+		{
+		case octal!0:
+			break;
+		case octal!1:
+			hasDisp = true;
+			break;
+		case octal!2:
+			hasDisp = true;
+			wideDisp = true;
+			break;
+		case octal!3:
+			break;
+		}
+
+		if (x == octal!3)
+		{
+			program.instructions ~= new Mov(mov, r, m);
+		}
+		else
+		{
+			short disp = hasDisp ? (wideDisp ? scanner.popWord() : scanner.pop()) : 0;
+
+			program.instructions ~= regIsDest ?
+				new MovSrcAdd(mov, r, m, disp) : new MovDestAdd(mov, r, m, disp);
 		}
 	}
 
-	return instructions;
-}
-
-void disassemble(Instr instr, ref File file)
-{
-	file.writeln("bits 16");
-	for (uint offset = 0; offset < instr.code.length;)
+	void immToReg(ubyte mov)
 	{
-		offset = disassemble(instr, offset);
+		// 27r Dw	mov Rw, Dw
+		ubyte r = (octal!7 & mov);
+		ushort word = scanner.popWord();
+
+		program.instructions ~= new MovImm(mov, r, word);
 	}
-}
-
-uint disassemble(Instr instr, uint offset)
-{
-	ubyte op = instr.code[offset];
-	final switch (op) with (Op)
-	{
-	case MOV:
-		assert(instr.registers.length >= 2);
-		Reg dest = instr.registers[offset * 2];
-		Reg src = instr.registers[offset * 2 + 1];
-
-		writefln!"mov %s, %s"(regNames[dest.addr][dest.wide], regNames[src.addr][src.wide]);
-		return offset + 1;
-	}
-}
-
-import std.range : front, popFront, isInputRange;
-
-auto pop(T)(scope ref T a) if (isInputRange!T)
-{
-	auto f = a.front;
-	a.popFront();
-	return f;
 }

@@ -10,7 +10,7 @@
             "name": "Debug D project",
             "cwd": "${workspaceFolder}",
             "program": "./bin/disassemble",
-            "args": ["bin/38"],
+            "args": ["bin/39"],
             "preLaunchTask": "dub: Build computer-enhance"
         }
     ]
